@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en-us">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <meta name="viewport" content="width=device-width, height=device-height, initial-scale=1.0, user-scalable=no">
+    <title>FNAFRewritten87</title>
+    <style>
+      html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
+      #unity-canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; background: #000; outline: none; }
+      #loading { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+                 gap: 18px; color: #fff; font: 16px/1.4 "Courier New", monospace; letter-spacing: 2px; text-align: center; }
+      #bar { width: min(420px, 70vw); height: 14px; border: 2px solid #fff; }
+      #fill { width: 0%; height: 100%; background: #fff; }
+      #hint { position: fixed; bottom: 16px; width: 100%; text-align: center; color: #888;
+              font: 13px "Courier New", monospace; transition: opacity 0.6s; pointer-events: none; }
+      #error { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); max-width: 80vw; padding: 12px 16px;
+               background: #a00; color: #fff; font: 14px sans-serif; display: none; }
+    </style>
+  </head>
+  <body>
+    <canvas id="unity-canvas" tabindex="-1"></canvas>
+    <div id="loading"><div id="status">LOADING</div><div id="bar"><div id="fill"></div></div><div id="pct">0%</div></div>
+    <div id="hint" style="opacity:0">Click to go fullscreen</div>
+    <div id="error"></div>
+    <script src="Build/87fnaf.loader.js"></script>
+    <script>
+      // Port template (not original game code), made for static hosting such as GitHub Pages:
+      // - the game fills the whole browser window; the first click or key press switches to true fullscreen;
+      // - GitHub rejects files over 100 MB, so the build splits the game data into parts
+      //   (Build/<data>.parts.json lists them) and this page joins them back together before starting Unity.
+      var canvas = document.querySelector("#unity-canvas");
+      var hint = document.querySelector("#hint");
+      var errorBox = document.querySelector("#error");
+      var dataFile = "Build/87fnaf.data";
+
+      function showError(message) {
+        errorBox.textContent = message;
+        errorBox.style.display = "block";
+      }
+
+      function setProgress(fraction, label) {
+        var p = Math.max(0, Math.min(100, Math.round(fraction * 100)));
+        document.querySelector("#fill").style.width = p + "%";
+        document.querySelector("#pct").textContent = p + "%";
+        if (label) document.querySelector("#status").textContent = label;
+      }
+
+      // Downloads the split game data (if the build was split) and returns a URL Unity can load it from.
+      function loadGameData() {
+        return fetch(dataFile + ".parts.json", { cache: "no-store" }).then(function (r) {
+          if (!r.ok) return dataFile;   // not split: load the single file directly
+          return r.json().then(function (manifest) {
+            var loaded = new Array(manifest.parts.length).fill(0);
+            var report = function () {
+              var sum = loaded.reduce(function (a, b) { return a + b; }, 0);
+              setProgress(0.9 * sum / manifest.size, "DOWNLOADING");
+            };
+            var fetchPart = function (name, i) {
+              return fetch("Build/" + name).then(function (res) {
+                if (!res.ok) throw new Error("Missing game file Build/" + name + " (" + res.status + ")");
+                var reader = res.body.getReader(), chunks = [];
+                var pump = function () {
+                  return reader.read().then(function (step) {
+                    if (step.done) return new Blob(chunks);
+                    chunks.push(step.value);
+                    loaded[i] += step.value.length;
+                    report();
+                    return pump();
+                  });
+                };
+                return pump();
+              });
+            };
+            // A few parts at a time: fast on GitHub's CDN without opening dozens of connections.
+            var blobs = new Array(manifest.parts.length), next = 0;
+            var worker = function () {
+              if (next >= manifest.parts.length) return Promise.resolve();
+              var i = next++;
+              return fetchPart(manifest.parts[i], i).then(function (b) { blobs[i] = b; return worker(); });
+            };
+            return Promise.all([worker(), worker(), worker(), worker()]).then(function () {
+              return URL.createObjectURL(new Blob(blobs, { type: "application/octet-stream" }));
+            });
+          });
+        }, function () { return dataFile; });
+      }
+
+      if (location.protocol === "file:") {
+        // Browsers block Unity games opened straight from a folder; it works once the folder is on a website.
+        document.querySelector("#loading").innerHTML =
+          '<div style="font-size:22px">THIS PAGE MUST BE OPENED FROM A WEBSITE</div>' +
+          '<div>Upload this folder to GitHub Pages (or any web host) and open its link.</div>' +
+          '<div style="color:#888">To test on this PC, use Build And Run in Unity.</div>';
+      } else {
+        loadGameData().then(function (dataUrl) {
+          return createUnityInstance(canvas, {
+            dataUrl: dataUrl,
+            frameworkUrl: "Build/87fnaf.framework.js",
+            codeUrl: "Build/87fnaf.wasm",
+            streamingAssetsUrl: "StreamingAssets",
+            companyName: "Dot-e",
+            productName: "FNAFRewritten87",
+            productVersion: "0.4.0",
+            devicePixelRatio: 1, // render at window size, not 2-3x on high-DPI laptops (much faster)
+            // Don't also copy the ~0.8 GB game data into the browser's storage (it ran out of memory doing that).
+            cacheControl: function (url) { return "no-store"; },
+            showBanner: function (msg, type) { if (type === "error") showError(msg); },
+          }, function (progress) {
+            setProgress(0.9 + 0.1 * progress, "STARTING");
+          }).then(function (unityInstance) {
+            if (dataUrl.indexOf("blob:") === 0) URL.revokeObjectURL(dataUrl);
+            document.querySelector("#loading").style.display = "none";
+            hint.style.opacity = 1;
+            // Only the first interaction; after that Esc / F11 work as usual.
+            var goFullscreen = function () {
+              canvas.removeEventListener("pointerdown", goFullscreen);
+              window.removeEventListener("keydown", goFullscreen);
+              if (!document.fullscreenElement) unityInstance.SetFullscreen(1);
+              hint.style.opacity = 0;
+            };
+            canvas.addEventListener("pointerdown", goFullscreen);
+            window.addEventListener("keydown", goFullscreen);
+            canvas.focus();
+          });
+        }).catch(function (message) {
+          showError(String(message));
+        });
+      }
+    </script>
+  </body>
+</html>
